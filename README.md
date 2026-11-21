@@ -62,6 +62,16 @@ pi --provider sakura --model preview/DeepSeek-V4.1-Flash-1017
 | GLM 5.3 Flash | ○ | 1,048,575 |
 | DeepSeek V4.1 Flash | ○ | 1,048,575 |
 
+## 推論レベル（Thinking）
+
+全モデルでPiの7段階（`off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`）を選択できる。モデルごとの対応レベルによる制限や、自動補正・エラー時の自動切替は行わない。
+
+```sh
+pi --provider sakura --model preview/DeepSeek-V4.1-Flash-1017 --thinking max
+```
+
+**選択できることは、さくら側での対応を保証しない。** Pi標準のOpenAI互換通信を利用し、`xhigh` と `max` はそれぞれ同名の `reasoning_effort` 値として送信を試みる。モデルやAPIによっては値が無視されたり、エラーになる可能性がある。`off` は推論を明示的に無効化する指定ではなく、Pi標準の動作に従うため、モデル側で推論が続く場合もある。
+
 ## 利用量と料金表示の制約
 
 `/sakura-usage` は**現在のPiセッションファイルの応答を集計**する。同じセッション内で別の会話ブランチに移動した場合も、既に発生したAPI呼び出しは集計対象。
