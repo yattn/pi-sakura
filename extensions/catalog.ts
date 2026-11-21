@@ -23,41 +23,69 @@ export function classifyCatalog(ids: readonly string[]) {
   };
 }
 
-// Reads only the current session file. Includes abandoned conversation branches,
-// because those API calls can still be billed. Not account-wide usage.
+// Reads only the current Pi session file, including abandoned branches.
+// Response counts are NOT request counts: retries and transport failures may
+// not produce a saved assistant message. Usage entries may describe extra
+// metered operations, not chat responses.
 export function summarizeSession(entries: readonly unknown[]) {
-  const rates = new Map<string, (typeof MODEL_SPECS)[number]>(MODEL_SPECS.map((model) => [model.id, model]));
-  let requests = 0;
+  const rates = new Map<string, (typeof MODEL_SPECS)[number]>(
+    MODEL_SPECS.map((model) => [model.id, model]),
+  );
+  let responses = 0;
+  let completed = 0;
+  let failed = 0;
+  let other = 0;
+  let usageEntries = 0;
+  let unmeteredResponses = 0;
   let input = 0;
   let output = 0;
   let referenceJPY = 0;
   let unpriced = 0;
 
-  const add = (modelId: string, usage: { input: number; output: number }) => {
-    requests++;
-    input += usage.input;
-    output += usage.output;
+  const addUsage = (modelId: string, usage: unknown): boolean => {
+    if (!usage || typeof usage !== "object") return false;
+    const u = usage as Record<string, unknown>;
+    if (typeof u.input !== "number" || typeof u.output !== "number" ||
+        !Number.isFinite(u.input) || !Number.isFinite(u.output) ||
+        u.input < 0 || u.output < 0) return false;
+
+    input += u.input;
+    output += u.output;
     const rate = rates.get(modelId);
-    if (!rate) { unpriced++; return; }
-    referenceJPY += (usage.input * rate.inputJPY + usage.output * rate.outputJPY) / 10000;
+    if (rate) {
+      referenceJPY += (u.input * rate.inputJPY + u.output * rate.outputJPY) / 10000;
+    } else {
+      unpriced++;
+    }
+    return true;
   };
 
   for (const value of entries) {
     if (!value || typeof value !== "object") continue;
     const entry = value as Record<string, any>;
-    let modelId: string | undefined;
-    let usage: { input: number; output: number } | undefined;
-    if (entry.type === "message" && entry.message?.role === "assistant" && entry.message.provider === "sakura") {
-      modelId = entry.message.model;
-      usage = entry.message.usage;
-    } else if (entry.type === "usage" && entry.provider === "sakura") {
-      modelId = entry.model;
-      usage = entry.usage;
+    if (entry.type === "message" && entry.message?.role === "assistant" &&
+        entry.message.provider === "sakura") {
+      const message = entry.message as Record<string, unknown>;
+      responses++;
+      if (message.stopReason === "error" || message.stopReason === "aborted") {
+        failed++;
+      } else if (message.stopReason === "stop" || message.stopReason === "length" ||
+                 message.stopReason === "toolUse") {
+        completed++;
+      } else {
+        other++;
+      }
+      if (typeof message.model !== "string" || !addUsage(message.model, message.usage)) {
+        unmeteredResponses++;
+      }
+    } else if (entry.type === "usage" && entry.provider === "sakura" &&
+               typeof entry.model === "string") {
+      if (addUsage(entry.model, entry.usage)) usageEntries++;
     }
-    if (typeof modelId !== "string" || !usage) continue;
-    if (!Number.isFinite(usage.input) || !Number.isFinite(usage.output) || usage.input < 0 || usage.output < 0) continue;
-    add(modelId, usage);
   }
 
-  return { requests, input, output, referenceJPY, unpriced };
+  return {
+    responses, completed, failed, other, usageEntries, unmeteredResponses,
+    input, output, referenceJPY, unpriced,
+  };
 }
