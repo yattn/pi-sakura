@@ -2,7 +2,13 @@
   "name": "pi-sakura",
   "version": "0.2.0",
   "description": "Sakura AI Engine provider for Pi",
-  "keywords": ["pi-package", "pi", "sakura", "ai-engine", "provider"],
+  "keywords": [
+    "pi-package",
+    "pi",
+    "sakura",
+    "ai-engine",
+    "provider"
+  ],
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -11,18 +17,25 @@
   "type": "module",
   "scripts": {
     "test": "node --experimental-strip-types --test",
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "smoke": "node ./test/smoke.mjs"
   },
   "pi": {
-    "extensions": ["./extensions/sakura.ts"]
+    "extensions": [
+      "./extensions/sakura.ts"
+    ]
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": ">=1.6.0",
     "@earendil-works/pi-coding-agent": ">=1.6.0"
   },
   "peerDependenciesMeta": {
-    "@earendil-works/pi-ai": { "optional": true },
-    "@earendil-works/pi-coding-agent": { "optional": true }
+    "@earendil-works/pi-ai": {
+      "optional": true
+    },
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "^1.6.0",
