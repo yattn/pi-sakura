@@ -22,8 +22,9 @@ const ALL_MODELS: SakuraModel[] = MODEL_SPECS.map((spec) => ({
 }));
 
 export default function (pi: ExtensionAPI) {
-  // The catalog endpoint is undocumented: discovery is advisory only.
-  // Never remove models from Pi's bundled list based on an incomplete response.
+  // Use the bundled catalog until the remote list is retrieved successfully.
+  // A successful response replaces the visible model list, including an empty list.
+  let activeModels: SakuraModel[] = ALL_MODELS;
   let syncStatus: { message: string; level: "info" | "warning" | "error" } = {
     message: "Not checked (using bundled models)",
     level: "info",
@@ -60,6 +61,8 @@ export default function (pi: ExtensionAPI) {
 
   pi.registerProvider({
     ...provider,
+    getModels: () => activeModels,
+    getAllModels: () => activeModels,
     async refreshModels(context) {
       if (!context.allowNetwork) return;
       const token = context.credential?.type === "api_key"
@@ -75,8 +78,8 @@ export default function (pi: ExtensionAPI) {
       }
 
       try {
-        // GET /v1/models is not an officially documented inference endpoint.
-        // This is a diagnostic check, not a source of truth for availability.
+        // GET /v1/models is not in the published Inference API specification.
+        // Only a valid, successful response changes the visible model list.
         const response = await fetch(`${BASE_URL}/models`, {
           headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
           signal: AbortSignal.any([context.signal, AbortSignal.timeout(5000)]),
@@ -111,12 +114,21 @@ export default function (pi: ExtensionAPI) {
 
         const ids: string[] = payload.data.map((row: { id: string }) => row.id);
         const result = classifyCatalog(ids);
-        const missing = MODEL_SPECS.length - result.supported.length;
+        const available = new Set<string>(result.supported.map((model) => model.id));
+        const next = ALL_MODELS.filter((model) => available.has(model.id));
+        // Publish through Pi so its model registry refresh sees the new list.
+        // Do not alter the list if this refresh has been superseded.
+        const published = await context.publish({
+          update: () => { activeModels = next; },
+        });
+        if (!published) return;
+
+        const missing = MODEL_SPECS.length - next.length;
         syncStatus = {
-          message: `Catalog reports ${result.supported.length}/${MODEL_SPECS.length} bundled models` +
-            (missing ? `; ${missing} not listed (still selectable)` : "") +
+          message: `Catalog lists ${next.length}/${MODEL_SPECS.length} supported models` +
+            (missing ? `; ${missing} absent models hidden` : "") +
             (result.unknown.length ? `; ${result.unknown.length} unknown IDs ignored` : "") +
-            ". This endpoint is unofficial; no models were removed.",
+            ". Verify the API list if a model is missing.",
           level: missing ? "warning" : "info",
         };
       } catch {
