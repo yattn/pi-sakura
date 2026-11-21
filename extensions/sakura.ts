@@ -92,7 +92,7 @@ export default function (pi: ExtensionAPI) {
           syncStatus = "No recognized tool-capable models (keeping previous list)";
           return;
         }
-        const selected = new Set(result.supported.map((model) => model.id));
+        const selected = new Set<string>(result.supported.map((model) => model.id));
         const next = ALL_MODELS.filter((model) => selected.has(model.id));
         const published = await context.publish({ update: () => { activeModels = next; } });
         if (published) {
