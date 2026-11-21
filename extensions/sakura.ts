@@ -71,7 +71,7 @@ export default function (pi: ExtensionAPI) {
 
       if (!token) {
         syncStatus = {
-          message: "No API token. Run /login or set SAKURA_AI_TOKEN. Bundled models remain listed.",
+          message: "No API token. Run /login or set SAKURA_AI_TOKEN. Current model list is unchanged.",
           level: "warning",
         };
         return;
@@ -87,14 +87,14 @@ export default function (pi: ExtensionAPI) {
 
         if (response.status === 401 || response.status === 403) {
           syncStatus = {
-            message: `Model catalog returned HTTP ${response.status}. Check the token and account permissions. Bundled models remain listed.`,
+            message: `Model catalog returned HTTP ${response.status}. Check the token and account permissions. Current model list is unchanged.`,
             level: "error",
           };
           return;
         }
         if (!response.ok) {
           syncStatus = {
-            message: `Model catalog returned HTTP ${response.status}; availability could not be verified. Bundled models remain listed.`,
+            message: `Model catalog returned HTTP ${response.status}; availability could not be verified. Current model list is unchanged.`,
             level: "warning",
           };
           return;
@@ -106,7 +106,7 @@ export default function (pi: ExtensionAPI) {
             !payload.data.every((row: unknown) =>
               row && typeof row === "object" && "id" in row && typeof row.id === "string")) {
           syncStatus = {
-            message: "Unexpected model catalog format. Bundled models remain listed.",
+            message: "Unexpected model catalog format. Current model list is unchanged.",
             level: "warning",
           };
           return;
@@ -135,7 +135,7 @@ export default function (pi: ExtensionAPI) {
         if (context.signal.aborted) return;
         // Never log tokens, request headers, or upstream response bodies.
         syncStatus = {
-          message: "Model catalog unavailable. Bundled models remain listed.",
+          message: "Model catalog unavailable. Current model list is unchanged.",
           level: "warning",
         };
       }
@@ -151,7 +151,7 @@ export default function (pi: ExtensionAPI) {
       if (result.aborted) {
         ctx.ui.notify("Sakura model check cancelled", "warning");
       } else if (result.errors.has("sakura")) {
-        ctx.ui.notify("Sakura model check failed; bundled models remain available", "warning");
+        ctx.ui.notify("Sakura model check failed; current model list is unchanged", "warning");
       } else {
         ctx.ui.notify(`Sakura: ${syncStatus.message}`, syncStatus.level);
       }
