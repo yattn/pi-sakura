@@ -22,8 +22,12 @@ const ALL_MODELS: SakuraModel[] = MODEL_SPECS.map((spec) => ({
 }));
 
 export default function (pi: ExtensionAPI) {
-  let activeModels: SakuraModel[] = ALL_MODELS;
-  let syncStatus = "Not checked";
+  // The catalog endpoint is undocumented: discovery is advisory only.
+  // Never remove models from Pi's bundled list based on an incomplete response.
+  let syncStatus: { message: string; level: "info" | "warning" | "error" } = {
+    message: "Not checked (using bundled models)",
+    level: "info",
+  };
 
   const provider = createProvider({
     id: "sakura",
@@ -56,53 +60,72 @@ export default function (pi: ExtensionAPI) {
 
   pi.registerProvider({
     ...provider,
-    getModels: () => activeModels,
-    getAllModels: () => activeModels,
     async refreshModels(context) {
       if (!context.allowNetwork) return;
       const token = context.credential?.type === "api_key"
         ? context.credential.key
         : process.env.SAKURA_AI_TOKEN;
+
       if (!token) {
-        syncStatus = "No account token (using bundled list)";
+        syncStatus = {
+          message: "No API token. Run /login or set SAKURA_AI_TOKEN. Bundled models remain listed.",
+          level: "warning",
+        };
         return;
       }
 
       try {
-        // /v1/models works in practice but is not documented in the Inference API spec.
+        // GET /v1/models is not an officially documented inference endpoint.
+        // This is a diagnostic check, not a source of truth for availability.
         const response = await fetch(`${BASE_URL}/models`, {
           headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
           signal: AbortSignal.any([context.signal, AbortSignal.timeout(5000)]),
         });
-        if (!response.ok) {
-          syncStatus = `Model discovery HTTP ${response.status} (keeping previous list)`;
+
+        if (response.status === 401 || response.status === 403) {
+          syncStatus = {
+            message: `Model catalog returned HTTP ${response.status}. Check the token and account permissions. Bundled models remain listed.`,
+            level: "error",
+          };
           return;
         }
+        if (!response.ok) {
+          syncStatus = {
+            message: `Model catalog returned HTTP ${response.status}; availability could not be verified. Bundled models remain listed.`,
+            level: "warning",
+          };
+          return;
+        }
+
         const payload: unknown = await response.json();
         if (!payload || typeof payload !== "object" || !("data" in payload) ||
             !Array.isArray(payload.data) ||
             !payload.data.every((row: unknown) =>
               row && typeof row === "object" && "id" in row && typeof row.id === "string")) {
-          syncStatus = "Invalid model response (keeping previous list)";
+          syncStatus = {
+            message: "Unexpected model catalog format. Bundled models remain listed.",
+            level: "warning",
+          };
           return;
         }
-        const ids = payload.data.map((row: { id: string }) => row.id);
+
+        const ids: string[] = payload.data.map((row: { id: string }) => row.id);
         const result = classifyCatalog(ids);
-        if (!result.supported.length) {
-          syncStatus = "No recognized tool-capable models (keeping previous list)";
-          return;
-        }
-        const selected = new Set<string>(result.supported.map((model) => model.id));
-        const next = ALL_MODELS.filter((model) => selected.has(model.id));
-        const published = await context.publish({ update: () => { activeModels = next; } });
-        if (published) {
-          syncStatus = `${next.length} known models available` +
-            (result.unknown.length ? ` (${result.unknown.length} unknown IDs ignored)` : "");
-        }
+        const missing = MODEL_SPECS.length - result.supported.length;
+        syncStatus = {
+          message: `Catalog reports ${result.supported.length}/${MODEL_SPECS.length} bundled models` +
+            (missing ? `; ${missing} not listed (still selectable)` : "") +
+            (result.unknown.length ? `; ${result.unknown.length} unknown IDs ignored` : "") +
+            ". This endpoint is unofficial; no models were removed.",
+          level: missing ? "warning" : "info",
+        };
       } catch {
         if (context.signal.aborted) return;
-        // Never log a token, request headers, or the remote response body.
-        syncStatus = "Model discovery unavailable (keeping previous list)";
+        // Never log tokens, request headers, or upstream response bodies.
+        syncStatus = {
+          message: "Model catalog unavailable. Bundled models remain listed.",
+          level: "warning",
+        };
       }
     },
   });
@@ -113,10 +136,12 @@ export default function (pi: ExtensionAPI) {
       const result = await ctx.modelRegistry.refresh({
         providers: ["sakura"], force: true, signal: ctx.signal,
       });
-      if (result.errors.has("sakura")) {
-        ctx.ui.notify("Sakura refresh failed; existing models remain available", "warning");
+      if (result.aborted) {
+        ctx.ui.notify("Sakura model check cancelled", "warning");
+      } else if (result.errors.has("sakura")) {
+        ctx.ui.notify("Sakura model check failed; bundled models remain available", "warning");
       } else {
-        ctx.ui.notify(`Sakura: ${syncStatus}`, "info");
+        ctx.ui.notify(`Sakura: ${syncStatus.message}`, syncStatus.level);
       }
     },
   });
