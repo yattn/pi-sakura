@@ -26,7 +26,7 @@ export function classifyCatalog(ids: readonly string[]) {
 // Reads only the current session file. Includes abandoned conversation branches,
 // because those API calls can still be billed. Not account-wide usage.
 export function summarizeSession(entries: readonly unknown[]) {
-  const rates = new Map(MODEL_SPECS.map((model) => [model.id, model]));
+  const rates = new Map<string, (typeof MODEL_SPECS)[number]>(MODEL_SPECS.map((model) => [model.id, model]));
   let requests = 0;
   let input = 0;
   let output = 0;
