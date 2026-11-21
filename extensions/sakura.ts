@@ -152,11 +152,13 @@ export default function (pi: ExtensionAPI) {
       const totals = summarizeSession(ctx.sessionManager.getEntries());
       ctx.ui.notify(
         `Sakura (this session only, including abandoned branches)\n` +
-        `Responses: ${totals.requests}, input: ${totals.input}, output: ${totals.output} tokens\n` +
+        `Recorded responses: ${totals.responses} (completed: ${totals.completed}, failed/aborted: ${totals.failed}, other: ${totals.other})\n` +
+        `Token usage: input ${totals.input}, output ${totals.output}\n` +
+        `Additional usage records: ${totals.usageEntries}; responses with unavailable usage: ${totals.unmeteredResponses}\n` +
         `Reference token-based price: ¥${totals.referenceJPY.toFixed(4)}` +
-        (totals.unpriced ? ` (${totals.unpriced} unpriced model responses)` : "") +
+        (totals.unpriced ? ` (${totals.unpriced} unpriced records)` : "") +
         `\nFree allowance: up to ${FREE_CHAT_REQUESTS_PER_MONTH.toLocaleString()} chat requests/month for the entire account; remaining balance unknown.\n` +
-        "Not a bill: excludes other sessions/apps, failed requests, free-tier accounting, and billing minimums.",
+        "Not a bill or request count: excludes other sessions/apps and requests without recorded usage; free-tier and billing minimums are not applied.",
         "info",
       );
     },
