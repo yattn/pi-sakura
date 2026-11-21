@@ -13,6 +13,8 @@ const ALL_MODELS: SakuraModel[] = MODEL_SPECS.map((spec) => ({
   id: spec.id,
   name: spec.name,
   reasoning: true,
+  // Expose every Pi thinking level; actual support is determined by the upstream model.
+  thinkingLevelMap: { xhigh: "xhigh", max: "max" },
   input: [...spec.input],
   contextWindow: spec.contextWindow,
   maxTokens: spec.maxTokens,
