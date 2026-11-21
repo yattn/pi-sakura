@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { getSupportedThinkingLevels, clampThinkingLevel } from "@earendil-works/pi-ai/compat";
 import register from "../extensions/sakura.ts";
 import { MODEL_SPECS, classifyCatalog, summarizeSession } from "../extensions/catalog.ts";
 
@@ -45,6 +46,12 @@ test("registers six tool-capable models, secure API-key login, and two commands"
   for (const model of provider.getModels()) {
     assert.equal(model.api, "openai-completions");
     assert.equal(model.reasoning, true);
+    const levels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+    assert.deepEqual(getSupportedThinkingLevels(model), levels);
+    for (const level of levels) {
+      assert.equal(clampThinkingLevel(model, level), level);
+    }
+    assert.deepEqual(model.thinkingLevelMap, { xhigh: "xhigh", max: "max" });
     assert.equal(model.compat.maxTokensField, "max_tokens");
     assert.ok(model.contextWindow >= model.maxTokens);
   }
