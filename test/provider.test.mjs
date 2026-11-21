@@ -19,8 +19,7 @@ function refreshContext() {
     allowNetwork: true,
     credential: { type: "api_key", key: "test-token" },
     signal: new AbortController().signal,
-    // Advisory discovery must not publish updates to the model list.
-    publish: async () => { throw new Error("Unexpected model publication"); },
+    publish: async ({ update }) => { update(); return true; },
   };
 }
 
@@ -66,44 +65,63 @@ test("registers six tool-capable models, secure API-key login, and two commands"
   assert.equal(result.auth.apiKey, "example-secret");
 });
 
-test("unofficial partial model catalog never removes bundled models", async () => {
+test("successful catalog replaces visible models, including missing and empty lists", async () => {
   const { provider, commands } = setup();
-  const expected = provider.getModels().map((m) => m.id);
+  const bundled = provider.getModels().map((m) => m.id);
   const originalFetch = globalThis.fetch;
+
+  const notifications = [];
+  const sync = async () => {
+    notifications.length = 0;
+    await commands.get("sakura-sync").handler("", commandContext(provider, notifications));
+    assert.equal(notifications.length, 1);
+    return notifications[0];
+  };
+
   try {
     globalThis.fetch = async () => ({
       ok: true,
       status: 200,
-      json: async () => ({
-        data: [
-          { id: "preview/DeepSeek-V4.1-Flash-1017" },
-          { id: "future-model-not-yet-reviewed" },
-        ],
-      }),
+      json: async () => ({ data: [
+        { id: "preview/DeepSeek-V4.1-Flash-1017" },
+        { id: "future-model-not-yet-reviewed" },
+      ] }),
     });
-    const notifications = [];
-    await commands.get("sakura-sync").handler("", commandContext(provider, notifications));
-    assert.deepEqual(provider.getModels().map((m) => m.id), expected);
-    assert.match(notifications[0].message, /1\/6 bundled models/);
-    assert.match(notifications[0].message, /5 not listed \(still selectable\)/);
-    assert.equal(notifications[0].level, "warning");
+    const partial = await sync();
+    assert.deepEqual(provider.getModels().map((m) => m.id), ["preview/DeepSeek-V4.1-Flash-1017"]);
+    assert.deepEqual(provider.getAllModels().map((m) => m.id), ["preview/DeepSeek-V4.1-Flash-1017"]);
+    assert.match(partial.message, /1\/6 supported models/);
+    assert.match(partial.message, /5 absent models hidden/);
+    assert.equal(partial.level, "warning");
     assert.deepEqual(classifyCatalog(["gpt-oss-120b", "not-known"]).unknown, ["not-known"]);
 
     for (const status of [401, 403, 404, 503]) {
       globalThis.fetch = async () => ({ ok: false, status });
-      notifications.length = 0;
-      await commands.get("sakura-sync").handler("", commandContext(provider, notifications));
-      assert.deepEqual(provider.getModels().map((m) => m.id), expected);
-      assert.match(notifications[0].message, new RegExp(String(status)));
-      assert.equal(notifications[0].level, status === 401 || status === 403 ? "error" : "warning");
-      assert.doesNotMatch(notifications[0].message, /test-token/);
+      const note = await sync();
+      assert.deepEqual(provider.getModels().map((m) => m.id), ["preview/DeepSeek-V4.1-Flash-1017"]);
+      assert.match(note.message, new RegExp(String(status)));
+      assert.equal(note.level, status === 401 || status === 403 ? "error" : "warning");
+      assert.doesNotMatch(note.message, /test-token/);
     }
 
     globalThis.fetch = async () => ({ ok: true, json: async () => ({ models: [] }) });
-    notifications.length = 0;
-    await commands.get("sakura-sync").handler("", commandContext(provider, notifications));
-    assert.deepEqual(provider.getModels().map((m) => m.id), expected);
-    assert.match(notifications[0].message, /Unexpected model catalog format/);
+    const invalid = await sync();
+    assert.deepEqual(provider.getModels().map((m) => m.id), ["preview/DeepSeek-V4.1-Flash-1017"]);
+    assert.match(invalid.message, /Unexpected model catalog format/);
+
+    globalThis.fetch = async () => ({ ok: true, json: async () => ({ data: [] }) });
+    const empty = await sync();
+    assert.deepEqual(provider.getModels().map((m) => m.id), []);
+    assert.match(empty.message, /0\/6 supported models/);
+
+    globalThis.fetch = async () => ({
+      ok: true,
+      json: async () => ({ data: bundled.map((id) => ({ id })) }),
+    });
+    const restored = await sync();
+    assert.deepEqual(provider.getModels().map((m) => m.id), bundled);
+    assert.match(restored.message, /6\/6 supported models/);
+    assert.equal(restored.level, "info");
   } finally {
     globalThis.fetch = originalFetch;
   }
