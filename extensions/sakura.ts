@@ -1,6 +1,7 @@
 import { createProvider, openAICompletionsApi } from "@earendil-works/pi-ai/compat";
 import type { Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { fetchAccountUsage } from "./account-usage.ts";
 import { BASE_URL, FREE_CHAT_REQUESTS_PER_MONTH, MODEL_SPECS, classifyCatalog, summarizeSession } from "./catalog.ts";
 
 type SakuraModel = Model<"openai-completions">;
@@ -161,19 +162,35 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerCommand("sakura-usage", {
-    description: "Show Sakura usage and reference JPY cost for this Pi session",
+    description: "Show Sakura account usage and this Pi session's usage and reference cost",
     async handler(_args, ctx) {
       const totals = summarizeSession(ctx.sessionManager.getEntries());
+      const accountUsage = await fetchAccountUsage(ctx.signal);
+      let serverUsage: string;
+      if (accountUsage.status === "available") {
+        const { month, chatRequests, chatLimit } = accountUsage;
+        const remaining = Math.max(0, chatLimit - chatRequests);
+        serverUsage = `Server Usage (${month} JST, Sakura account)\n` +
+          `Chat Completions requests: ${chatRequests.toLocaleString()} / ${chatLimit.toLocaleString()}\n` +
+          `Estimated free requests remaining: ${remaining.toLocaleString()}`;
+      } else {
+        const reason = accountUsage.status === "unconfigured"
+          ? "Set SAKURA_ACCESS_TOKEN and SAKURA_ACCESS_TOKEN_SECRET to query account usage."
+          : accountUsage.reason;
+        serverUsage = `Server Usage (unavailable)\n${reason}\n` +
+          `Published free allowance reference: up to ${FREE_CHAT_REQUESTS_PER_MONTH.toLocaleString()} chat requests/month.`;
+      }
+
       ctx.ui.notify(
-        `Sakura (this session only, including abandoned branches)\n` +
+        `${serverUsage}\n\n` +
+        `Session Usage (Sakura, all branches in this Pi session)\n` +
         `Recorded responses: ${totals.responses} (completed: ${totals.completed}, failed/aborted: ${totals.failed}, other: ${totals.other})\n` +
         `Token usage: input ${totals.input}, output ${totals.output}\n` +
         `Additional usage records: ${totals.usageEntries}; responses with unavailable usage: ${totals.unmeteredResponses}\n` +
         `Reference token-based price: ¥${totals.referenceJPY.toFixed(4)}` +
         (totals.unpriced ? ` (${totals.unpriced} unpriced records)` : "") +
-        `\nFree allowance: up to ${FREE_CHAT_REQUESTS_PER_MONTH.toLocaleString()} chat requests/month for the entire account; remaining balance unknown.\n` +
-        "Not a bill or request count: excludes other sessions/apps and requests without recorded usage; free-tier and billing minimums are not applied.",
-        "info",
+        "\nThe session price uses recorded tokens and published unit prices, before free-tier and billing adjustments.",
+        accountUsage.status === "unavailable" ? "warning" : "info",
       );
     },
   });

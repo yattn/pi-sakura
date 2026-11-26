@@ -155,3 +155,150 @@ test("usage separates completed and failed replies; no bill or request count inf
   assert.ok(Math.abs(result.referenceJPY - 5.45) < 1e-10);
   assert.equal(result.unpriced, 0);
 });
+
+const cloudCredentials = {
+  SAKURA_ACCESS_TOKEN: "test-cloud-token",
+  SAKURA_ACCESS_TOKEN_SECRET: "test-cloud-secret",
+};
+
+function setTestEnv(t, env) {
+  for (const [key, value] of Object.entries(env)) {
+    const previous = process.env[key];
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+    t.after(() => {
+      if (previous === undefined) delete process.env[key];
+      else process.env[key] = previous;
+    });
+  }
+}
+
+function cloudAuthResponse(limit = 2500) {
+  return Response.json({ account: { plan: { request_limit_chat_completions: limit } } });
+}
+
+function monthlyUsageRow(chatRequests, time = "2027-01-01T00:00:00+09:00") {
+  return { time, type: "request", requests: { chat_completions: chatRequests } };
+}
+
+async function runUsageCommand(signal) {
+  const { commands } = setup();
+  const notifications = [];
+  await commands.get("sakura-usage").handler("", {
+    signal,
+    sessionManager: { getEntries: () => [
+      { type: "message", message: { role: "assistant", provider: "sakura", model: "gpt-oss-120b", stopReason: "stop", usage: { input: 10000, output: 10000 } } },
+    ] },
+    ui: { notify: (message, level) => notifications.push({ message, level }) },
+  });
+  assert.equal(notifications.length, 1);
+  const note = notifications[0];
+  assert.match(note.message, /Session Usage/);
+  assert.match(note.message, /Recorded responses: 1/);
+  assert.match(note.message, /Reference token-based price: ¥0\.9000/);
+  return note;
+}
+
+test("usage queries the current JST month and uses the account's actual limit", async (t) => {
+  setTestEnv(t, { ...cloudCredentials, SAKURA_AI_TOKEN: "inference-token" });
+  t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-12-31T15:00:00Z") });
+  const fetch = t.mock.method(globalThis, "fetch", async (input) => {
+    if (String(input).endsWith("/auth/")) return cloudAuthResponse();
+    return Response.json({ results: [monthlyUsageRow(179), monthlyUsageRow(711, "2027-02-01T00:00:00+09:00")] });
+  });
+
+  const note = await runUsageCommand();
+  assert.equal(note.level, "info");
+  assert.match(note.message, /Server Usage \(2027-01 JST, Sakura account\)/);
+  assert.ok(note.message.includes(`Chat Completions requests: 179 / ${(2500).toLocaleString()}`));
+  assert.ok(note.message.includes(`Estimated free requests remaining: ${(2321).toLocaleString()}`));
+  const calls = fetch.mock.calls.map(({ arguments: [input, options] }) => {
+    assert.equal(options.headers.Authorization, `Basic ${Buffer.from("test-cloud-token:test-cloud-secret").toString("base64")}`);
+    assert.equal(options.redirect, "error");
+    assert.equal(options.method ?? "GET", "GET");
+    return new URL(input);
+  });
+  const origin = "https://secure.sakura.ad.jp/cloud/api/ai/1.0";
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].href, `${origin}/auth/`);
+  assert.equal(calls[1].origin + calls[1].pathname, `${origin}/usages/`);
+  assert.deepEqual(Object.fromEntries(calls[1].searchParams), {
+    start_at: "2026-12-31T15:00:00.000Z",
+    end_at: "2027-01-31T15:00:00.000Z",
+    type: "request",
+  });
+  assert.doesNotMatch(note.message, /test-cloud|inference-token/);
+});
+
+test("usage with absent or partial cloud credentials stays local", async (t) => {
+  setTestEnv(t, { SAKURA_ACCESS_TOKEN: undefined, SAKURA_ACCESS_TOKEN_SECRET: undefined, SAKURA_AI_TOKEN: "inference-token" });
+  const fetch = t.mock.method(globalThis, "fetch", async () => { throw new Error("Unexpected request"); });
+
+  let note = await runUsageCommand();
+  assert.equal(note.level, "info");
+  assert.match(note.message, /Set SAKURA_ACCESS_TOKEN and SAKURA_ACCESS_TOKEN_SECRET/);
+  process.env.SAKURA_ACCESS_TOKEN = cloudCredentials.SAKURA_ACCESS_TOKEN;
+  note = await runUsageCommand();
+  assert.match(note.message, /Server Usage \(unavailable\)/);
+  assert.equal(fetch.mock.callCount(), 0);
+});
+
+test("usage handles an empty month and clamps remaining requests at zero", async (t) => {
+  setTestEnv(t, cloudCredentials);
+  t.mock.timers.enable({ apis: ["Date"], now: new Date("2027-01-14T06:00:00Z") });
+  let rows = [];
+  t.mock.method(globalThis, "fetch", async (input) => String(input).endsWith("/auth/")
+    ? cloudAuthResponse(50)
+    : Response.json({ results: rows }));
+
+  let note = await runUsageCommand();
+  assert.match(note.message, /Chat Completions requests: 0 \/ 50\nEstimated free requests remaining: 50/);
+  rows = [monthlyUsageRow(60)];
+  note = await runUsageCommand();
+  assert.match(note.message, /Chat Completions requests: 60 \/ 50\nEstimated free requests remaining: 0/);
+});
+
+test("usage falls back to the session on HTTP errors and malformed upstream data", async (t) => {
+  setTestEnv(t, cloudCredentials);
+  t.mock.timers.enable({ apis: ["Date"], now: new Date("2027-01-14T06:00:00Z") });
+  let usageResponse;
+  t.mock.method(globalThis, "fetch", async (input) => String(input).endsWith("/auth/")
+    ? cloudAuthResponse()
+    : usageResponse());
+
+  for (const [respond, expected] of [
+    [() => new Response("private diagnostic", { status: 403 }), /HTTP 403.*project permissions/],
+    [() => new Response("private diagnostic", { status: 503 }), /HTTP 503/],
+    [() => new Response("private diagnostic"), /Unexpected Sakura Cloud usage response/],
+    [() => Response.json({ results: [monthlyUsageRow(-1)] }), /Unexpected Sakura Cloud usage response/],
+    [() => { throw new Error("private diagnostic"); }, /Could not reach the Sakura Cloud usage API/],
+  ]) {
+    usageResponse = respond;
+    const note = await runUsageCommand();
+    assert.equal(note.level, "warning");
+    assert.match(note.message, /Server Usage \(unavailable\)/);
+    assert.match(note.message, expected);
+    assert.doesNotMatch(note.message, /private diagnostic|Estimated free requests remaining/);
+  }
+});
+
+test("usage falls back on timeout or cancellation", async (t) => {
+  setTestEnv(t, cloudCredentials);
+  const timeout = new AbortController();
+  const timeoutMock = t.mock.method(AbortSignal, "timeout", () => timeout.signal);
+  const fetch = t.mock.method(globalThis, "fetch", async (_url, { signal }) => {
+    await new Promise((_, reject) => {
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    });
+  });
+
+  const pending = runUsageCommand();
+  timeout.abort();
+  assert.match((await pending).message, /timed out/);
+  assert.deepEqual(timeoutMock.mock.calls[0].arguments, [5000]);
+
+  const cancelled = new AbortController();
+  cancelled.abort();
+  assert.match((await runUsageCommand(cancelled.signal)).message, /cancelled/);
+  assert.equal(fetch.mock.callCount(), 2);
+});
