@@ -1,9 +1,7 @@
-import { createProvider, openAICompletionsApi } from "@earendil-works/pi-ai/compat";
-import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
-
 const CLOUD_AI_URL = "https://secure.sakura.ad.jp/cloud/api/ai/1.0";
-const ACCESS_TOKEN_ENV = "SAKURA_ACCESS_TOKEN";
-const ACCESS_TOKEN_SECRET_ENV = "SAKURA_ACCESS_TOKEN_SECRET";
+export const USAGE_PROVIDER_ID = "sakura-usage";
+export const ACCESS_TOKEN_ENV = "SAKURA_ACCESS_TOKEN";
+export const ACCESS_TOKEN_SECRET_ENV = "SAKURA_ACCESS_TOKEN_SECRET";
 const JST_OFFSET_HOURS = 9;
 const REQUEST_TIMEOUT_MS = 5000;
 
@@ -14,65 +12,26 @@ type AccountUsage =
 
 class CloudUsageError extends Error {}
 
-function basicAuthorization(accessToken?: string, secret?: string): string | undefined {
-  const token = accessToken?.trim();
-  const password = secret?.trim();
+export function usageAuthorization(env?: Record<string, unknown>): string | undefined {
+  const accessToken = env?.[ACCESS_TOKEN_ENV];
+  const secret = env?.[ACCESS_TOKEN_SECRET_ENV];
+  if (typeof accessToken !== "string" || typeof secret !== "string") return undefined;
+  const token = accessToken.trim();
+  const password = secret.trim();
   if (token && password) {
     return `Basic ${Buffer.from(`${token}:${password}`).toString("base64")}`;
   }
 }
 
-export const accountUsageProvider = createProvider({
-  id: "sakura-usage",
-  name: "Sakura Cloud Usage",
-  auth: {
-    apiKey: {
-      name: "Sakura Cloud API key",
-      async login({ prompt, signal }) {
-        const accessToken = (await prompt({
-          type: "secret", message: "Enter your Sakura Cloud access token", signal,
-        })).trim();
-        signal.throwIfAborted();
-        if (!accessToken) throw new Error("Access token is empty");
-
-        const secret = (await prompt({
-          type: "secret", message: "Enter your Sakura Cloud access token secret", signal,
-        })).trim();
-        signal.throwIfAborted();
-        if (!secret) throw new Error("Access token secret is empty");
-
-        return {
-          type: "api_key",
-          env: { [ACCESS_TOKEN_ENV]: accessToken, [ACCESS_TOKEN_SECRET_ENV]: secret },
-        };
-      },
-      async resolve({ ctx, credential, signal }) {
-        signal.throwIfAborted();
-        const saved = basicAuthorization(
-          credential?.env?.[ACCESS_TOKEN_ENV], credential?.env?.[ACCESS_TOKEN_SECRET_ENV],
-        );
-        const authorization = saved ?? basicAuthorization(
-          await ctx.env(ACCESS_TOKEN_ENV), await ctx.env(ACCESS_TOKEN_SECRET_ENV),
-        );
-        signal.throwIfAborted();
-        if (!authorization) return undefined;
-
-        return {
-          auth: { headers: { Authorization: authorization } },
-          source: saved ? "stored Sakura Cloud API key" : "Sakura Cloud environment variables",
-        };
-      },
-    },
-  },
-  // Pi's provider factory requires an API implementation even for an empty catalog.
-  models: [],
-  api: openAICompletionsApi(),
-});
-
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   if (value && typeof value === "object" && !Array.isArray(value)) {
     return value as Record<string, unknown>;
   }
+}
+
+export function savedUsageAuthorization(content: string): string | undefined {
+  const credential = asRecord(asRecord(JSON.parse(content))?.[USAGE_PROVIDER_ID]);
+  if (credential?.type === "api_key") return usageAuthorization(asRecord(credential.env));
 }
 
 function isCount(value: unknown): value is number {
@@ -104,11 +63,13 @@ async function fetchJson(url: string | URL, options: RequestInit): Promise<unkno
   throw new CloudUsageError(`Sakura Cloud API returned HTTP ${response.status}.${hint}`);
 }
 
-export async function fetchAccountUsage(modelRegistry: ModelRegistry, signal?: AbortSignal): Promise<AccountUsage> {
+export async function fetchAccountUsage(
+  resolveAuthorization: () => Promise<string | null | undefined>,
+  signal?: AbortSignal,
+): Promise<AccountUsage> {
   let authorization: string | null | undefined;
   try {
-    const auth = await modelRegistry.getProviderAuth(accountUsageProvider.id);
-    authorization = auth?.auth.headers?.Authorization;
+    authorization = await resolveAuthorization();
   } catch {
     return { status: "unavailable", reason: "Could not read the Sakura Cloud API key from Pi." };
   }

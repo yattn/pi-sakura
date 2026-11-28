@@ -64,6 +64,16 @@ export SAKURA_ACCESS_TOKEN SAKURA_ACCESS_TOKEN_SECRET
 
 `/sakura-usage` を実行すると、設定した API キーでコントロールパネルの管理 API（`/auth/` と `/usages/`）に問い合わせます。タイムアウトは 5 秒です。キーが未設定の場合や利用量を取得できない場合も、セッションの集計を表示します。
 
+### スクリプトから今月のリクエスト数を取得する
+
+`pi-sakura` のディレクトリで、Node.js 22.19 以降を使って実行できます。
+
+```sh
+node scripts/sakura-usage.ts
+```
+
+日本時間で今月の Chat Completions リクエスト数を、整数 1 行で出力します。Pi の `auth.json` に保存した `sakura-usage` のキーを優先し、未登録なら環境変数を使います。`PI_CODING_AGENT_DIR` を指定している場合は、そのディレクトリの `auth.json` を読みます。取得に失敗すると、標準出力は空で終了コードは `1` です。
+
 ### セッションの利用量（Session Usage）
 
 現在の Pi セッションに記録された、さくらのモデルからの応答を集計します。会話を途中で分岐した場合は、各ブランチの応答も含めます。

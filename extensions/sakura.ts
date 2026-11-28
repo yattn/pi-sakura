@@ -1,7 +1,7 @@
 import { createProvider, openAICompletionsApi } from "@earendil-works/pi-ai/compat";
 import type { Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { accountUsageProvider, fetchAccountUsage } from "./account-usage.ts";
+import { ACCESS_TOKEN_ENV, ACCESS_TOKEN_SECRET_ENV, USAGE_PROVIDER_ID, fetchAccountUsage, usageAuthorization } from "./account-usage.ts";
 import { BASE_URL, FREE_CHAT_REQUESTS_PER_MONTH, MODEL_SPECS, classifyCatalog, summarizeSession } from "./catalog.ts";
 
 type SakuraModel = Model<"openai-completions">;
@@ -23,6 +23,52 @@ const ALL_MODELS: SakuraModel[] = MODEL_SPECS.map((spec) => ({
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
   compat: { supportsDeveloperRole: false, maxTokensField: "max_tokens" },
 }));
+
+const accountUsageProvider = createProvider({
+  id: USAGE_PROVIDER_ID,
+  name: "Sakura Cloud Usage",
+  auth: {
+    apiKey: {
+      name: "Sakura Cloud API key",
+      async login({ prompt, signal }) {
+        const accessToken = (await prompt({
+          type: "secret", message: "Enter your Sakura Cloud access token", signal,
+        })).trim();
+        signal.throwIfAborted();
+        if (!accessToken) throw new Error("Access token is empty");
+
+        const secret = (await prompt({
+          type: "secret", message: "Enter your Sakura Cloud access token secret", signal,
+        })).trim();
+        signal.throwIfAborted();
+        if (!secret) throw new Error("Access token secret is empty");
+
+        return {
+          type: "api_key",
+          env: { [ACCESS_TOKEN_ENV]: accessToken, [ACCESS_TOKEN_SECRET_ENV]: secret },
+        };
+      },
+      async resolve({ ctx, credential, signal }) {
+        signal.throwIfAborted();
+        const saved = usageAuthorization(credential?.env);
+        const authorization = saved ?? usageAuthorization({
+          [ACCESS_TOKEN_ENV]: await ctx.env(ACCESS_TOKEN_ENV),
+          [ACCESS_TOKEN_SECRET_ENV]: await ctx.env(ACCESS_TOKEN_SECRET_ENV),
+        });
+        signal.throwIfAborted();
+        if (!authorization) return undefined;
+
+        return {
+          auth: { headers: { Authorization: authorization } },
+          source: saved ? "stored Sakura Cloud API key" : "Sakura Cloud environment variables",
+        };
+      },
+    },
+  },
+  // Pi's provider factory requires an API implementation even for an empty catalog.
+  models: [],
+  api: openAICompletionsApi(),
+});
 
 export default function (pi: ExtensionAPI) {
   // Use the bundled catalog until the remote list is retrieved successfully.
@@ -166,7 +212,10 @@ export default function (pi: ExtensionAPI) {
     description: "Show Sakura account usage and this Pi session's usage and reference cost",
     async handler(_args, ctx) {
       const totals = summarizeSession(ctx.sessionManager.getEntries());
-      const accountUsage = await fetchAccountUsage(ctx.modelRegistry, ctx.signal);
+      const accountUsage = await fetchAccountUsage(async () => {
+        const auth = await ctx.modelRegistry.getProviderAuth(accountUsageProvider.id);
+        return auth?.auth.headers?.Authorization;
+      }, ctx.signal);
       let serverUsage: string;
       if (accountUsage.status === "available") {
         const { month, chatRequests, chatLimit } = accountUsage;

@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { getSupportedThinkingLevels, clampThinkingLevel } from "@earendil-works/pi-ai/compat";
 import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import register from "../extensions/sakura.ts";
@@ -213,7 +215,30 @@ async function runUsageCommand(signal, modelRegistry) {
   return note;
 }
 
-test("usage login persists across restarts and logout restores environment credentials", async (t) => {
+function checkUsageCli(directory, credentials) {
+  const authorization = `Basic ${Buffer.from(credentials).toString("base64")}`;
+  const mockFetch = `globalThis.fetch = async (input, options) => {
+    if (options.headers.Authorization !== ${JSON.stringify(authorization)}) {
+      return new Response(null, { status: 403 });
+    }
+    const url = new URL(input);
+    if (url.pathname.endsWith("/auth/")) {
+      return Response.json({ account: { plan: { request_limit_chat_completions: 2500 } } });
+    }
+    return Response.json({ results: [{
+      time: url.searchParams.get("start_at"), type: "request", requests: { chat_completions: 179 },
+    }] });
+  };`;
+  const cli = fileURLToPath(new URL("../scripts/sakura-usage.ts", import.meta.url));
+  const result = spawnSync(process.execPath, ["--import", `data:text/javascript,${encodeURIComponent(mockFetch)}`, cli], {
+    env: { ...process.env, PI_CODING_AGENT_DIR: directory }, encoding: "utf8", timeout: 10000,
+  });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "179\n");
+}
+
+test("Pi and the usage CLI read saved credentials and use the environment after logout", async (t) => {
   const directory = mkdtempSync(join(tmpdir(), "pi-sakura-auth-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const authPath = join(directory, "auth.json");
@@ -244,8 +269,10 @@ test("usage login persists across restarts and logout restores environment crede
   registry.registerProvider(usageProvider);
   assert.deepEqual(restarted.getModels("sakura-usage"), []);
   await runUsageCommand(undefined, registry);
+  checkUsageCli(directory, "saved-cloud-token:saved-cloud-secret");
   await restarted.logout("sakura-usage");
   await runUsageCommand(undefined, registry);
+  checkUsageCli(directory, "test-cloud-token:test-cloud-secret");
 
   assert.deepEqual(fetch.mock.calls.map(({ arguments: [, options] }) => options.headers.Authorization), [
     ...Array(2).fill(`Basic ${Buffer.from("saved-cloud-token:saved-cloud-secret").toString("base64")}`),
