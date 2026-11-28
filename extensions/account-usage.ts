@@ -1,4 +1,9 @@
+import { createProvider, openAICompletionsApi } from "@earendil-works/pi-ai/compat";
+import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
+
 const CLOUD_AI_URL = "https://secure.sakura.ad.jp/cloud/api/ai/1.0";
+const ACCESS_TOKEN_ENV = "SAKURA_ACCESS_TOKEN";
+const ACCESS_TOKEN_SECRET_ENV = "SAKURA_ACCESS_TOKEN_SECRET";
 const JST_OFFSET_HOURS = 9;
 const REQUEST_TIMEOUT_MS = 5000;
 
@@ -8,6 +13,61 @@ type AccountUsage =
   | { status: "unavailable"; reason: string };
 
 class CloudUsageError extends Error {}
+
+function basicAuthorization(accessToken?: string, secret?: string): string | undefined {
+  const token = accessToken?.trim();
+  const password = secret?.trim();
+  if (token && password) {
+    return `Basic ${Buffer.from(`${token}:${password}`).toString("base64")}`;
+  }
+}
+
+export const accountUsageProvider = createProvider({
+  id: "sakura-usage",
+  name: "Sakura Cloud Usage",
+  auth: {
+    apiKey: {
+      name: "Sakura Cloud API key",
+      async login({ prompt, signal }) {
+        const accessToken = (await prompt({
+          type: "secret", message: "Enter your Sakura Cloud access token", signal,
+        })).trim();
+        signal.throwIfAborted();
+        if (!accessToken) throw new Error("Access token is empty");
+
+        const secret = (await prompt({
+          type: "secret", message: "Enter your Sakura Cloud access token secret", signal,
+        })).trim();
+        signal.throwIfAborted();
+        if (!secret) throw new Error("Access token secret is empty");
+
+        return {
+          type: "api_key",
+          env: { [ACCESS_TOKEN_ENV]: accessToken, [ACCESS_TOKEN_SECRET_ENV]: secret },
+        };
+      },
+      async resolve({ ctx, credential, signal }) {
+        signal.throwIfAborted();
+        const saved = basicAuthorization(
+          credential?.env?.[ACCESS_TOKEN_ENV], credential?.env?.[ACCESS_TOKEN_SECRET_ENV],
+        );
+        const authorization = saved ?? basicAuthorization(
+          await ctx.env(ACCESS_TOKEN_ENV), await ctx.env(ACCESS_TOKEN_SECRET_ENV),
+        );
+        signal.throwIfAborted();
+        if (!authorization) return undefined;
+
+        return {
+          auth: { headers: { Authorization: authorization } },
+          source: saved ? "stored Sakura Cloud API key" : "Sakura Cloud environment variables",
+        };
+      },
+    },
+  },
+  // Pi's provider factory requires an API implementation even for an empty catalog.
+  models: [],
+  api: openAICompletionsApi(),
+});
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   if (value && typeof value === "object" && !Array.isArray(value)) {
@@ -44,10 +104,15 @@ async function fetchJson(url: string | URL, options: RequestInit): Promise<unkno
   throw new CloudUsageError(`Sakura Cloud API returned HTTP ${response.status}.${hint}`);
 }
 
-export async function fetchAccountUsage(signal?: AbortSignal): Promise<AccountUsage> {
-  const accessToken = process.env.SAKURA_ACCESS_TOKEN?.trim();
-  const secret = process.env.SAKURA_ACCESS_TOKEN_SECRET?.trim();
-  if (!accessToken || !secret) return { status: "unconfigured" };
+export async function fetchAccountUsage(modelRegistry: ModelRegistry, signal?: AbortSignal): Promise<AccountUsage> {
+  let authorization: string | null | undefined;
+  try {
+    const auth = await modelRegistry.getProviderAuth(accountUsageProvider.id);
+    authorization = auth?.auth.headers?.Authorization;
+  } catch {
+    return { status: "unavailable", reason: "Could not read the Sakura Cloud API key from Pi." };
+  }
+  if (!authorization) return { status: "unconfigured" };
 
   // The control panel queries JST month boundaries as UTC timestamps.
   const nowJst = new Date(Date.now() + JST_OFFSET_HOURS * 60 * 60 * 1000);
@@ -67,7 +132,7 @@ export async function fetchAccountUsage(signal?: AbortSignal): Promise<AccountUs
   const requestSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;
   const options: RequestInit = {
     headers: {
-      Authorization: `Basic ${Buffer.from(`${accessToken}:${secret}`).toString("base64")}`,
+      Authorization: authorization,
       Accept: "application/json",
     },
     redirect: "error",

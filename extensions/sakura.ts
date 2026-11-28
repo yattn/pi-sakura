@@ -1,7 +1,7 @@
 import { createProvider, openAICompletionsApi } from "@earendil-works/pi-ai/compat";
 import type { Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { fetchAccountUsage } from "./account-usage.ts";
+import { accountUsageProvider, fetchAccountUsage } from "./account-usage.ts";
 import { BASE_URL, FREE_CHAT_REQUESTS_PER_MONTH, MODEL_SPECS, classifyCatalog, summarizeSession } from "./catalog.ts";
 
 type SakuraModel = Model<"openai-completions">;
@@ -144,6 +144,7 @@ export default function (pi: ExtensionAPI) {
       }
     },
   });
+  pi.registerProvider(accountUsageProvider);
 
   pi.registerCommand("sakura-sync", {
     description: "Refresh the Sakura model catalog from the service",
@@ -165,7 +166,7 @@ export default function (pi: ExtensionAPI) {
     description: "Show Sakura account usage and this Pi session's usage and reference cost",
     async handler(_args, ctx) {
       const totals = summarizeSession(ctx.sessionManager.getEntries());
-      const accountUsage = await fetchAccountUsage(ctx.signal);
+      const accountUsage = await fetchAccountUsage(ctx.modelRegistry, ctx.signal);
       let serverUsage: string;
       if (accountUsage.status === "available") {
         const { month, chatRequests, chatLimit } = accountUsage;
@@ -175,7 +176,7 @@ export default function (pi: ExtensionAPI) {
           `Estimated free requests remaining: ${remaining.toLocaleString()}`;
       } else {
         const reason = accountUsage.status === "unconfigured"
-          ? "Set SAKURA_ACCESS_TOKEN and SAKURA_ACCESS_TOKEN_SECRET to query account usage."
+          ? "Run /login sakura-usage or set SAKURA_ACCESS_TOKEN and SAKURA_ACCESS_TOKEN_SECRET to query account usage."
           : accountUsage.reason;
         serverUsage = `Server Usage (unavailable)\n${reason}\n` +
           `Published free allowance reference: up to ${FREE_CHAT_REQUESTS_PER_MONTH.toLocaleString()} chat requests/month.`;
