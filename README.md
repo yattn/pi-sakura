@@ -44,7 +44,15 @@ export SAKURA_AI_TOKEN
 
 さくら側の集計をもとに、今月の Chat Completions リクエスト数と契約プランの月間上限を表示します。月の区切りは日本時間です。無償枠の残りは、上限からリクエスト数を引いた目安です。
 
-月間利用量を表示するには、さくらのクラウドの API キーが必要です。対象プロジェクトで発行したキーのアクセストークンとシークレットを、Pi を起動するシェルで設定してください。 [API キーの発行手順](https://manual.sakura.ad.jp/cloud/api/apikey.html)
+月間利用量を表示するには、対象プロジェクトで発行したさくらのクラウド API キーが必要です。 [API キーの発行手順](https://manual.sakura.ad.jp/cloud/api/apikey.html)
+
+1. Pi で `/login sakura-usage` を実行します。
+2. クラウド API キーのアクセストークン、シークレットの順に入力します。Pi 1.6.0、1.6.1、1.7.0 では、入力した文字が画面に表示されます。
+3. `/sakura-usage` を実行します。
+
+キーは Pi の `auth.json` に `sakura-usage` として保存されます。削除するには `/logout` で `Sakura Cloud Usage` を選びます。
+
+環境変数を使う場合は、次のように設定して同じシェルから Pi を起動します。Pi に保存したキーがある場合は、そちらを優先します。
 
 ```bash
 read -rsp 'Sakura Cloud access token: ' SAKURA_ACCESS_TOKEN

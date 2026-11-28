@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { getSupportedThinkingLevels, clampThinkingLevel } from "@earendil-works/pi-ai/compat";
+import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import register from "../extensions/sakura.ts";
 import { MODEL_SPECS, classifyCatalog, summarizeSession } from "../extensions/catalog.ts";
 
@@ -11,8 +15,9 @@ function setup() {
     registerProvider: (provider) => providers.push(provider),
     registerCommand: (name, command) => commands.set(name, command),
   });
-  assert.equal(providers.length, 1);
-  return { provider: providers[0], commands };
+  assert.deepEqual(providers.map((provider) => provider.id), ["sakura", "sakura-usage"]);
+  const [provider, usageProvider] = providers;
+  return { provider, usageProvider, commands };
 }
 
 function refreshContext() {
@@ -181,11 +186,20 @@ function monthlyUsageRow(chatRequests, time = "2027-01-01T00:00:00+09:00") {
   return { time, type: "request", requests: { chat_completions: chatRequests } };
 }
 
-async function runUsageCommand(signal) {
-  const { commands } = setup();
+async function runUsageCommand(signal, modelRegistry) {
+  const { commands, usageProvider } = setup();
   const notifications = [];
   await commands.get("sakura-usage").handler("", {
     signal,
+    modelRegistry: modelRegistry ?? {
+      getProviderAuth(providerId) {
+        assert.equal(providerId, usageProvider.id);
+        return usageProvider.auth.apiKey.resolve({
+          ctx: { env: async (name) => process.env[name] },
+          signal: new AbortController().signal,
+        });
+      },
+    },
     sessionManager: { getEntries: () => [
       { type: "message", message: { role: "assistant", provider: "sakura", model: "gpt-oss-120b", stopReason: "stop", usage: { input: 10000, output: 10000 } } },
     ] },
@@ -198,6 +212,48 @@ async function runUsageCommand(signal) {
   assert.match(note.message, /Reference token-based price: ¥0\.9000/);
   return note;
 }
+
+test("usage login persists across restarts and logout restores environment credentials", async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "pi-sakura-auth-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const authPath = join(directory, "auth.json");
+  writeFileSync(authPath, JSON.stringify({ sakura: { type: "api_key", key: "inference-token" } }), { mode: 0o600 });
+  const runtimeOptions = { authPath, modelsPath: null, refreshOnCreate: false };
+  setTestEnv(t, cloudCredentials);
+  const { provider, usageProvider } = setup();
+  const fetch = t.mock.method(globalThis, "fetch", async (url) => String(url).endsWith("/auth/")
+    ? cloudAuthResponse()
+    : Response.json({ results: [] }));
+
+  const runtime = await ModelRuntime.create(runtimeOptions);
+  runtime.registerNativeProvider(usageProvider);
+  const prompts = [];
+  const login = (...answers) => runtime.login("sakura-usage", "api_key", {
+    signal: new AbortController().signal,
+    prompt: async (prompt) => { prompts.push(prompt.type); return answers.shift(); },
+    notify: () => {},
+  });
+  await login(" saved-cloud-token ", " saved-cloud-secret ");
+  assert.deepEqual(prompts, ["secret", "secret"]);
+  await assert.rejects(login("replacement-token", " "), /Access token secret is empty/);
+  assert.equal(fetch.mock.callCount(), 0);
+
+  const restarted = await ModelRuntime.create(runtimeOptions);
+  const registry = new ModelRegistry(restarted);
+  registry.registerProvider(provider);
+  registry.registerProvider(usageProvider);
+  assert.deepEqual(restarted.getModels("sakura-usage"), []);
+  await runUsageCommand(undefined, registry);
+  await restarted.logout("sakura-usage");
+  await runUsageCommand(undefined, registry);
+
+  assert.deepEqual(fetch.mock.calls.map(({ arguments: [, options] }) => options.headers.Authorization), [
+    ...Array(2).fill(`Basic ${Buffer.from("saved-cloud-token:saved-cloud-secret").toString("base64")}`),
+    ...Array(2).fill(`Basic ${Buffer.from("test-cloud-token:test-cloud-secret").toString("base64")}`),
+  ]);
+  assert.deepEqual(await restarted.listCredentials(), [{ providerId: "sakura", type: "api_key" }]);
+  assert.equal(await registry.getApiKeyForProvider("sakura"), "inference-token");
+});
 
 test("usage queries the current JST month and uses the account's actual limit", async (t) => {
   setTestEnv(t, { ...cloudCredentials, SAKURA_AI_TOKEN: "inference-token" });
@@ -236,7 +292,8 @@ test("usage with absent or partial cloud credentials stays local", async (t) => 
 
   let note = await runUsageCommand();
   assert.equal(note.level, "info");
-  assert.match(note.message, /Set SAKURA_ACCESS_TOKEN and SAKURA_ACCESS_TOKEN_SECRET/);
+  assert.match(note.message, /Run \/login sakura-usage/);
+  assert.match(note.message, /set SAKURA_ACCESS_TOKEN and SAKURA_ACCESS_TOKEN_SECRET/);
   process.env.SAKURA_ACCESS_TOKEN = cloudCredentials.SAKURA_ACCESS_TOKEN;
   note = await runUsageCommand();
   assert.match(note.message, /Server Usage \(unavailable\)/);
@@ -286,13 +343,16 @@ test("usage falls back on timeout or cancellation", async (t) => {
   setTestEnv(t, cloudCredentials);
   const timeout = new AbortController();
   const timeoutMock = t.mock.method(AbortSignal, "timeout", () => timeout.signal);
+  const { promise: started, resolve: start } = Promise.withResolvers();
   const fetch = t.mock.method(globalThis, "fetch", async (_url, { signal }) => {
+    start();
     await new Promise((_, reject) => {
       signal.addEventListener("abort", () => reject(signal.reason), { once: true });
     });
   });
 
   const pending = runUsageCommand();
+  await started;
   timeout.abort();
   assert.match((await pending).message, /timed out/);
   assert.deepEqual(timeoutMock.mock.calls[0].arguments, [5000]);
