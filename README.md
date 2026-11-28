@@ -10,8 +10,8 @@ Pi 1.6.0 以降と、さくらのAI Engine のアカウントトークンを用�
 pi install git:github.com/yattn/pi-sakura
 ```
 
-1. Pi を起動し、`/login` を実行して `Sakura AI Engine` を選びます。
-2. 発行したアカウントトークンを入力します。入力欄は伏せ字で表示され、Pi はトークンを `auth.json` に保存します。
+1. Pi を起動し、`/login` で `Sign in with an API key` を選びます。次の画面で `sakura` と入力し、`Sakura AI Engine` を選びます。
+2. 発行したアカウントトークンを入力します。Pi 1.6.1 では、入力した文字が画面に表示されます。トークンの保存先は Pi の `auth.json` です。
 3. `/model` を実行し、使いたいモデルを選びます。
 
 起動時にモデルを指定することもできます。
@@ -22,7 +22,7 @@ pi --provider sakura --model preview/DeepSeek-V4.1-Flash-1017
 
 ### 環境変数でトークンを渡す場合
 
-`/login` の代わりに、Pi を起動するシェルで環境変数 `SAKURA_AI_TOKEN` を設定できます。
+`/login` の代わりに、Bash でトークンを画面に出さずに入力できます。`SAKURA_AI_TOKEN` を設定したシェルから Pi を起動してください。
 
 ```bash
 read -rsp 'Sakura account token: ' SAKURA_AI_TOKEN
@@ -64,11 +64,11 @@ export SAKURA_ACCESS_TOKEN SAKURA_ACCESS_TOKEN_SECRET
 - トークン数には、応答や追加の利用量記録に残っている入力・出力のトークンを含めます。使用量が記録されたエラー応答も集計します。
 - 参考料金は、記録されたトークン数とさくらの公開単価から求めた円建ての概算です。無償枠や課金の最小単位（10,000 トークン／60 秒）を適用する前の金額です。 [公開単価](https://ai.sakura.ad.jp/sakura-ai/ai-engine/)
 
-Pi 標準のドル建て料金欄には `0` を表示します。実際の請求額は、さくらのコントロールパネルで確認できます。 [コントロールパネル](https://secure.sakura.ad.jp)
+Pi のドル建て集計では、さくらの利用分を 0 ドルとして扱います。実際の請求額は、さくらのコントロールパネルで確認できます。 [コントロールパネル](https://secure.sakura.ad.jp)
 
 ## 対応モデル
 
-同梱しているモデルは、いずれもツール呼び出し（Tool Calling）に対応しています。 [さくらの公式モデル仕様（2026 年 11 月 18 日更新）](https://manual.sakura.ad.jp/cloud/ai-engine/chat-models.html)
+同梱モデルはすべてツール呼び出し（Tool Calling）に対応しています。表の画像入力とコンテキスト長は、さくらの公開仕様に基づきます。 [さくらの公式モデル仕様（2026 年 11 月 18 日更新）](https://manual.sakura.ad.jp/cloud/ai-engine/chat-models.html)
 
 | モデル | 画像入力 | コンテキスト長 |
 | --- | :---: | ---: |
@@ -112,8 +112,6 @@ npm run smoke
 ```
 
 `npm run smoke` は、実際の Pi CLI にローカルの拡張を入れて、オフラインでさくらのモデルが一覧に出ることを確認します。
-
-さくらの API を使ったツール呼び出し、推論、画像入力の動作は今後検証します。
 
 ## ライセンス
 
